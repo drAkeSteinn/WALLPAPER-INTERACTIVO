@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Efecto de Agua — Multitouch</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        :root {
+            --accent: #0080FF;
+            --accent-glow: rgba(0,128,255,.35);
+            --card: rgba(6,14,28,.92);
+            --border: rgba(0,128,255,.18);
+            --muted: #4A6A8A;
+            --fg: #D8E8F8;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+        body {
+            font-family:'Outfit',sans-serif; color:var(--fg);
+            overflow:hidden; width:100vw; height:100vh; touch-action:none;
+            background:radial-gradient(120% 100% at 40% 35%, #0A2060 0%, #061540 40%, #030C28 75%, #010618 100%);
+        }
+        /* El video vive en el DOM (GPU del sistema); los canvas de agua van encima */
+        #bgv { position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; pointer-events:none; }
+        /* En modo GPU el vídeo sigue decodificando pero fuera de vista (textura) */
+        #bgv.mini { width:2px; height:2px; opacity:0; }
+        #glc, #c { position:fixed; top:0; left:0; width:100vw; height:100vh; display:none; cursor:crosshair; }
+        #rings { position:fixed; inset:0; pointer-events:none; z-index:50; }
+
+        /* Panel */
+        .panel {
+            position:fixed; top:12px; right:12px; width:260px;
+            background:var(--card); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px);
+            border:1px solid var(--border); border-radius:14px; z-index:100;
+            box-shadow:0 8px 36px rgba(0,0,0,.55);
+            transition:transform .4s cubic-bezier(.16,1,.3,1), opacity .3s;
+        }
+        .panel.off { transform:translateX(calc(100% + 20px)); opacity:0; pointer-events:none; }
+
+        .tog {
+            position:fixed; top:12px; right:12px; width:42px; height:42px;
+            background:var(--card); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+            border:1px solid var(--border); border-radius:10px; color:var(--accent);
+            font-size:16px; cursor:pointer; z-index:101;
+            display:flex; align-items:center; justify-content:center;
+            transition:all .3s; box-shadow:0 4px 16px rgba(0,0,0,.4);
+        }
+        .tog:hover { background:rgba(0,128,255,.1); border-color:rgba(0,128,255,.4); }
+        .tog.hide { opacity:0; pointer-events:none; transform:scale(.8); }
+
+        .sec {
+            font-size:9px; font-weight:700; text-transform:uppercase;
+            letter-spacing:.12em; color:var(--muted); margin-bottom:8px;
+        }
+
+        input[type="range"] {
+            -webkit-appearance:none; appearance:none; width:100%; height:4px;
+            background:rgba(0,128,255,.12); border-radius:2px; outline:none; cursor:pointer;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance:none; width:15px; height:15px; background:var(--accent);
+            border-radius:50%; cursor:pointer; box-shadow:0 0 10px var(--accent-glow);
+        }
+        input[type="range"]::-moz-range-thumb {
+            width:15px; height:15px; background:var(--accent); border-radius:50%;
+            border:none; box-shadow:0 0 10px var(--accent-glow);
+        }
+
+        .row { display:flex; justify-content:space-between; margin-bottom:4px; }
+        .row label { font-size:12px; }
+        .row span  { font-size:12px; color:var(--accent); font-weight:700; }
+
+        .btn-rain {
+            width:100%; padding:8px; border-radius:8px; font-family:'Outfit',sans-serif;
+            font-size:11px; font-weight:700; cursor:pointer; transition:all .25s;
+            display:flex; align-items:center; justify-content:center; gap:6px; margin-top:4px;
+        }
+        .btn-rain.off { background:rgba(0,128,255,.06); color:var(--muted); border:1px solid var(--border); }
+        .btn-rain.on  { background:rgba(0,128,255,.15); color:var(--accent); border:1px solid rgba(0,128,255,.4); box-shadow:0 0 14px rgba(0,128,255,.1); }
+
+        /* Anillo de toque */
+        .ring {
+            position:fixed; width:34px; height:34px; border:2px solid var(--accent);
+            border-radius:50%; pointer-events:none;
+            transform:translate(-50%,-50%) scale(0); opacity:0;
+        }
+        .ring.go { animation:pop .5s ease-out forwards; }
+        @keyframes pop {
+            0%   { transform:translate(-50%,-50%) scale(0); opacity:.9; }
+            50%  { transform:translate(-50%,-50%) scale(1.8); opacity:.4; }
+            100% { transform:translate(-50%,-50%) scale(2.8); opacity:0; }
+        }
+
+        .hint {
+            position:fixed; bottom:32px; left:50%; transform:translateX(-50%);
+            background:var(--card); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+            border:1px solid var(--border); border-radius:10px; padding:9px 20px;
+            z-index:90; text-align:center; font-size:13px;
+            transition:opacity .5s,transform .5s; box-shadow:0 4px 20px rgba(0,0,0,.4);
+        }
+        .hint.gone { opacity:0; transform:translateX(-50%) translateY(14px); pointer-events:none; }
+
+        /* Contador de dedos */
+        .badge {
+            position:fixed; bottom:10px; left:10px;
+            background:var(--card); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+            border:1px solid var(--border); border-radius:10px;
+            padding:6px 14px; z-index:90; font-size:12px; color:var(--muted);
+            display:flex; align-items:center; gap:8px;
+        }
+        .badge b {
+            color:var(--accent); font-weight:900; font-size:20px; min-width:26px; text-align:center;
+            display:inline-block; transition:transform .15s ease, color .15s;
+        }
+        .badge b.pulse { transform:scale(1.45); }
+        .badge b.hot { color:#5AB0FF; }
+
+        @media (prefers-reduced-motion:reduce) { .ring.go { animation:none; opacity:0; } .badge b { transition:none; } }
+    </style>
+</head>
+<body>
+
+<video id="bgv" muted loop playsinline autoplay preload="auto" aria-hidden="true"></video>
+<canvas id="glc" aria-label="Agua (GPU)"></canvas>
+<canvas id="c" aria-label="Agua (compatibilidad)"></canvas>
+<div id="rings"></div>
+
+<button class="tog hide" id="togBtn" aria-label="Abrir panel"><i class="fas fa-sliders-h"></i></button>
+
+<div class="panel" id="panel">
+    <div style="padding:12px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border);">
+        <span style="font-size:14px; font-weight:900;">Parametros</span>
+        <button id="closeBtn" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size:15px;" aria-label="Cerrar"><i class="fas fa-times"></i></button>
+    </div>
+    <div style="padding:14px 16px;">
+        <div class="sec">Agua</div>
+
+        <div style="margin-bottom:12px;">
+            <div class="row"><label>Fuerza</label><span id="vS">340</span></div>
+            <input type="range" id="sS" min="80" max="1800" value="340" step="10">
+        </div>
+        <div style="margin-bottom:12px;">
+            <div class="row"><label>Amortiguacion</label><span id="vD">0.975</span></div>
+            <input type="range" id="sD" min="900" max="998" value="975" step="1">
+        </div>
+        <div style="margin-bottom:12px;">
+            <div class="row"><label>Refraccion</label><span id="vR">128</span></div>
+            <input type="range" id="sR" min="10" max="400" value="128" step="5">
+        </div>
+        <div style="margin-bottom:14px;">
+            <div class="row"><label>Radio</label><span id="vRad">3</span></div>
+            <input type="range" id="sRad" min="1" max="10" value="3" step="1">
+        </div>
+
+        <button class="btn-rain off" id="rainBtn"><i class="fas fa-cloud-rain"></i> Modo lluvia</button>
+    </div>
+</div>
+
+<div class="hint" id="hint">Toca con 1 a 10 dedos &middot; cada toque crea ondas y suma en el contador</div>
+<div class="badge"><i class="fas fa-hand-pointer"></i> Dedos: <b id="dC">0</b> <span id="modo"></span></div>
+
+<script>
+/*
+ * =============================================
+ *  VÍDEO DE FONDO LOCAL (se prueban en orden)
+ *  1) 27-Cw0079la.webm
+ *  2) 27-cw0079la.mp4   (reserva)
+ * =============================================
+ */
+const VIDEO_SOURCES = ["27-Cw0079la.webm", "27-cw0079la.mp4"];
+
+const vid  = document.getElementById('bgv');
+const glc  = document.getElementById('glc');
+const c2   = document.getElementById('c');
+
+let str = 340, dmp = 0.975, ref = 128, rad = 3, rain = false;
+
+/* =========================================================
+   ESTADO COMÚN
+   ========================================================= */
+let W = 0, H = 0;
+let vReady = false;        // el vídeo tiene fotogramas
+let srcIdx = -1;
+let mode = 'boot';         // 'gpu' | '2d' | 'novideo'
+const cover = { sx:0, sy:0, sw:0, sh:0 };   // recorte cover en píxeles del vídeo
+let raf = 0;
+let errFrames = 0;
+
+const $dC = document.getElementById('dC');
+const $modo = document.getElementById('modo');
+
+function setMode(m) {
+    mode = m;
+    $modo.textContent = m === 'gpu' ? '· GPU' : (m === '2d' ? '· compatibilidad' : '');
+    glc.style.display = m === 'gpu' ? 'block' : 'none';
+    c2.style.display  = m === '2d'  ? 'block' : 'none';
+    vid.classList.toggle('mini', m === 'gpu');
+}
+
+/* =========================================================
+   ENTRADA: Pointer Events (ratón + táctil + lápiz, hasta 10 dedos)
+   Los toques caen en una cola de gotas que se aplica 1 vez por frame.
+   ========================================================= */
+const drops = [];          // {x, y, s, r} en píxeles de pantalla
+const pts = new Map();     // pointerId -> {px, py}
+function addDrop(x, y, s, r) { if (drops.length < 64) drops.push({ x: x, y: y, s: s, r: r }); }
+function drainDrops() {
+    const out = drops.slice(-12);   // GPU acepta 12 por frame
+    drops.length = 0;
+    return out;
+}
+function down(e) {
+    if (e.target !== c2 && e.target !== glc) return;   // el panel sigue pulsable
+    if (e.pointerType === 'touch') e.preventDefault();
+    hideH();
+    vid.play().catch(() => {});
+    pts.set(e.pointerId, { px: e.clientX, py: e.clientY });
+    addDrop(e.clientX, e.clientY, str, rad);
+    ring(e.clientX, e.clientY);
+    uC();
+}
+function move(e) {
+    const p = pts.get(e.pointerId);
+    if (!p) return;
+    if (e.pointerType === 'touch') e.preventDefault();
+    const dx = e.clientX - p.px, dy = e.clientY - p.py, d = Math.sqrt(dx * dx + dy * dy);
+    if (d > 3) {
+        const n = Math.min(6, Math.ceil(d / 6)), s = str * .55;
+        for (let i = 1; i <= n; i++) { const f = i / n; addDrop(p.px + dx * f, p.py + dy * f, s, rad); }
+        p.px = e.clientX; p.py = e.clientY;
+    }
+}
+function release(e) { if (pts.delete(e.pointerId)) uC(); }
+window.addEventListener('pointerdown', down);
+window.addEventListener('pointermove', move, { passive: false });
+window.addEventListener('pointerup', release);
+window.addEventListener('pointercancel', release);
+document.addEventListener('pointerleave', () => { if (pts.size) { pts.clear(); uC(); } });
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+
+/* =========================================================
+   CONTADOR DE DEDOS (1..10+)
+   ========================================================= */
+function uC() {
+    const n = pts.size;
+    $dC.textContent = n;
+    $dC.classList.toggle('hot', n > 0);
+    $dC.classList.remove('pulse');
+    void $dC.offsetWidth;
+    if (n > 0) $dC.classList.add('pulse');
+}
+
+/* =========================================================
+   ANILLOS + HINT
+   ========================================================= */
+const rP = [];
+function ring(x, y) {
+    let el = rP.find(r => !r.on);
+    if (!el) { if (rP.length >= 20) el = rP.shift(); el = document.createElement('div'); el.className = 'ring'; document.getElementById('rings').appendChild(el); rP.push(el); }
+    el.on = true; el.style.left = x + 'px'; el.style.top = y + 'px';
+    el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+    setTimeout(() => { el.on = false; }, 520);
+}
+let hG = false;
+function hideH() { if (hG) return; hG = true; document.getElementById('hint').classList.add('gone'); }
+
+/* =========================================================
+   VÍDEO: cargar (webm -> mp4), recorte cover, autoplay
+   ========================================================= */
+function updateCover() {
+    const vw = vid.videoWidth, vh = vid.videoHeight;
+    if (!vw || !vh || !W) return;
+    const cr = W / H, ir = vw / vh;
+    if (ir > cr) { cover.sh = vh; cover.sw = vh * cr; cover.sx = (vw - cover.sw) / 2; cover.sy = 0; }
+    else { cover.sw = vw; cover.sh = vw / cr; cover.sx = 0; cover.sy = (vh - cover.sh) / 2; }
+}
+function nextSource() {
+    srcIdx++;
+    if (srcIdx >= VIDEO_SOURCES.length) {
+        vReady = false;
+        activateBestMode();
+        console.warn('Sin vídeo de fondo: se usa el degradado azul.');
+        return;
+    }
+    vid.src = VIDEO_SOURCES[srcIdx];
+    vid.load();
+    vid.play().catch(() => {});
+}
+vid.addEventListener('loadedmetadata', updateCover);
+vid.addEventListener('loadeddata', () => { vReady = true; updateCover(); activateBestMode(); });
+vid.addEventListener('error', nextSource);
+function tryPlay() { if (vid.paused && srcIdx < VIDEO_SOURCES.length) vid.play().catch(() => {}); }
+
+/* =========================================================
+   RENDER 1: AGUA EN GPU (WebGL2)
+   Simulación de alturas en texturas (ping-pong) + shader de
+   refracción muestreando el vídeo como textura.
+   NUNCA se leen píxeles de vuelta (ese era el cuello de botella).
+   ========================================================= */
+let gl = null, gpu = null;
+const VS = `#version 300 es
+in vec2 p; out vec2 uv;
+void main(){ uv = p*0.5+0.5; gl_Position = vec4(p,0.,1.); }`;
+
+const FS_UPDATE = `#version 300 es
+precision highp float;
+in vec2 uv; out vec4 o;
+uniform sampler2D uPrev;
+uniform vec2 uTexel;
+uniform float uDamp;
+uniform vec4 uSplat[12];
+uniform int uCount;
+uniform float uAspect;
+void main(){
+    vec4 pr = texture(uPrev, uv);
+    float avg = ( texture(uPrev, uv+vec2(uTexel.x,0.)).r
+                + texture(uPrev, uv-vec2(uTexel.x,0.)).r
+                + texture(uPrev, uv+vec2(0.,uTexel.y)).r
+                + texture(uPrev, uv-vec2(0.,uTexel.y)).r ) * 0.25;
+    float v = (avg*2.0 - pr.g) * uDamp;
+    for (int i = 0; i < 12; i++) {
+        if (i >= uCount) break;
+        vec2 d = (uv - uSplat[i].xy) * vec2(uAspect, 1.0);
+        float r = uSplat[i].w;
+        v += uSplat[i].z * exp(-dot(d,d) / (r*r));
+    }
+    o = vec4(v, pr.r, 0.0, 1.0);
+}`;
+
+const FS_RENDER = `#version 300 es
+precision highp float;
+in vec2 uv; out vec4 o;
+uniform sampler2D uHeight;
+uniform sampler2D uVideo;
+uniform vec2 uTexel;
+uniform float uRefK;
+uniform vec2 vScale, vOff;
+void main(){
+    float hL = texture(uHeight, uv - vec2(uTexel.x,0.)).r;
+    float hR = texture(uHeight, uv + vec2(uTexel.x,0.)).r;
+    float hD = texture(uHeight, uv - vec2(0.,uTexel.y)).r;
+    float hU = texture(uHeight, uv + vec2(0.,uTexel.y)).r;
+    float h  = texture(uHeight, uv).r;
+    vec2 g = vec2(hR-hL, hU-hD);
+    vec2 vuv = vOff + uv*vScale + g*uRefK;
+    vec3 col = texture(uVideo, vuv).rgb;
+    vec3 nrm = normalize(vec3(-g*18.0, 1.0));
+    vec3 ldir = normalize(vec3(-0.35, 0.55, 0.75));
+    float diff = clamp(dot(nrm, ldir), 0.0, 1.0);
+    float spec = pow(clamp(reflect(-ldir, nrm).z, 0.0, 1.0), 24.0);
+    col += vec3(0.0, 0.45, 1.0) * (spec*0.85 + diff*0.08);   // destello azul eléctrico
+    col += vec3(-0.06, 0.02, 0.12) * h;                       // tinte azul por altura
+    o = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('Shader: ' + gl.getShaderInfoLog(s));
+    return s;
+}
+function program(fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.bindAttribLocation(p, 0, 'p');
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('Link: ' + gl.getProgramInfoLog(p));
+    return p;
+}
+function heightTarget(w, h) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    return { t: t, f: f };
+}
+
+function gpuInit() {
+    gl = glc.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+    if (!gl) throw new Error('Sin WebGL2');
+    if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('Sin EXT_color_buffer_float');
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    const pU = program(FS_UPDATE), pR = program(FS_RENDER);
+    const L = (p, n) => gl.getUniformLocation(p, n);
+    gpu = {
+        pU: pU, pR: pR,
+        uU: { prev: L(pU,'uPrev'), texel: L(pU,'uTexel'), damp: L(pU,'uDamp'), splat: L(pU,'uSplat'), count: L(pU,'uCount'), aspect: L(pU,'uAspect') },
+        uR: { height: L(pR,'uHeight'), video: L(pR,'uVideo'), texel: L(pR,'uTexel'), refK: L(pR,'uRefK'), vScale: L(pR,'vScale'), vOff: L(pR,'vOff') },
+        videoTex: gl.createTexture(),
+        simW: 0, simH: 0, A: null, B: null
+    };
+    gl.bindTexture(gl.TEXTURE_2D, gpu.videoTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gpuResize();
+}
+
+function gpuResize() {
+    const simH = 150, simW = Math.max(64, Math.min(460, Math.round(simH * W / H)));
+    if (gpu.simW === simW && gpu.simH === simH) return;
+    gpu.simW = simW; gpu.simH = simH;
+    gpu.A = heightTarget(simW, simH);
+    gpu.B = heightTarget(simW, simH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, gpu.A.f);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, gpu.B.f);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+function gpuProbe() {
+    // ¿Podemos subir el vídeo como textura? (en file:// Chromium lo bloquea)
+    if (vid.readyState < 2 || !vid.videoWidth) return false;
+    gl.bindTexture(gl.TEXTURE_2D, gpu.videoTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, vid);
+    return true;
+}
+
+function gpuFrame() {
+    if (vReady && vid.readyState >= 2 && vid.videoWidth) {
+        gl.bindTexture(gl.TEXTURE_2D, gpu.videoTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, vid);
+    }
+    // 2 pasos de simulación (olas más vivas, coste despreciable en GPU)
+    for (let step = 0; step < 2; step++) {
+        const prev = step === 0 ? gpu.B : gpu.A, cur = step === 0 ? gpu.A : gpu.B;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, cur.f);
+        gl.viewport(0, 0, gpu.simW, gpu.simH);
+        gl.useProgram(gpu.pU);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, prev.t);
+        gl.uniform1i(gpu.uU.prev, 0);
+        gl.uniform2f(gpu.uU.texel, 1 / gpu.simW, 1 / gpu.simH);
+        gl.uniform1f(gpu.uU.damp, dmp);
+        const dr = step === 0 ? drainDrops() : [];
+        const n = dr.length;
+        if (n) {
+            const arr = new Float32Array(12 * 4);
+            for (let i = 0; i < n; i++) {
+                const d = dr[i];
+                arr[i*4]   = d.x / W;
+                arr[i*4+1] = 1 - d.y / H;
+                arr[i*4+2] = d.s * 0.0022;
+                arr[i*4+3] = d.r * 0.014 + 0.006;
+            }
+            gl.uniform4fv(gpu.uU.splat, arr);
+        }
+        gl.uniform1i(gpu.uU.count, n);
+        gl.uniform1f(gpu.uU.aspect, W / H);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    // Render final: refracción del vídeo + sombreado azul
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(gpu.pR);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, gpu.B.t);
+    gl.uniform1i(gpu.uR.height, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, gpu.videoTex);
+    gl.uniform1i(gpu.uR.video, 1);
+    gl.uniform2f(gpu.uR.texel, 1 / gpu.simW, 1 / gpu.simH);
+    gl.uniform1f(gpu.uR.refK, ref * 0.0006);
+    const vw = vid.videoWidth, vh = vid.videoHeight;
+    if (vw && vh) {
+        const cr = W / H, ir = vw / vh;
+        if (ir > cr) { gl.uniform2f(gpu.uR.vScale, cr / ir, 1); gl.uniform2f(gpu.uR.vOff, (1 - cr / ir) / 2, 0); }
+        else { gl.uniform2f(gpu.uR.vScale, 1, ir / cr); gl.uniform2f(gpu.uR.vOff, 0, (1 - ir / cr) / 2); }
+    } else { gl.uniform2f(gpu.uR.vScale, 1, 1); gl.uniform2f(gpu.uR.vOff, 0, 0); }
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const t = gpu.A; gpu.A = gpu.B; gpu.B = t; // los papeles se intercambian tras consumir
+}
+
+/* =========================================================
+   RENDER 2: MODO COMPATIBILIDAD (2D, sin leer píxeles nunca)
+   El vídeo se ve en su propio elemento; el canvas transparente
+   dibuja SOLO la zona ondulada: recortes desplazados + brillo.
+   Coste proporcional a la onda activa, no a la pantalla.
+   ========================================================= */
+const SC = 0.3;
+let simW = 0, simH = 0, b1 = null, b2 = null, ctx2 = null;
+const SHIM = [];
+for (let i = 0; i < 11; i++) SHIM.push('rgba(130,195,255,' + (i / 50).toFixed(2) + ')');
+
+function c2Resize() {
+    simW = Math.max(64, (W * SC) | 0);
+    simH = Math.max(48, (H * SC) | 0);
+    b1 = new Float32Array(simW * simH);
+    b2 = new Float32Array(simW * simH);
+}
+function ripple(sx, sy, s, r) {
+    const rad = r || 3;
+    const x0 = (sx * SC) | 0, y0 = (sy * SC) | 0;
+    for (let dy = -rad; dy <= rad; dy++) {
+        for (let dx = -rad; dx <= rad; dx++) {
+            const px = x0 + dx, py = y0 + dy;
+            if (px < 1 || px >= simW - 1 || py < 1 || py >= simH - 1) continue;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d <= rad) { const f = 1 - d / rad; b1[py * simW + px] += s * f * f; }
+        }
+    }
+}
+function c2Frame() {
+    // Simulación (barata: 9% de los píxeles de pantalla)
+    for (let y = 1; y < simH - 1; y++) {
+        const r = y * simW;
+        for (let x = 1; x < simW - 1; x++) {
+            const i = r + x;
+            b2[i] = ((b1[i - 1] + b1[i + 1] + b1[i - simW] + b1[i + simW]) * .5) - b2[i];
+            b2[i] *= dmp;
+        }
+    }
+    const t = b1; b1 = b2; b2 = t;
+
+    for (const d of drainDrops()) ripple(d.x, d.y, d.s * 0.8, d.r);
+    if (rain) ripple(Math.random() * W, Math.random() * H, str * (.15 + Math.random() * .45), rad);
+
+    const ctx = ctx2;
+    ctx.clearRect(0, 0, W, H);
+    if (vReady && vid.readyState >= 2 && vid.videoWidth) {
+        const cell = 18;
+        const kx = cover.sw / W, ky = cover.sh / H;
+        const wv = cell * kx, hv = cell * ky;
+        if (wv < cover.sw && hv < cover.sh) {
+            const mxc = cover.sx + cover.sw - wv, myc = cover.sy + cover.sh - hv;
+            let drawn = 0;
+            for (let cy = 0; cy < H; cy += cell) {
+                const iy = ((cy + cell * .5) * SC) | 0;
+                if (iy < 1 || iy >= simH - 1) continue;
+                const row = iy * simW;
+                for (let cx = 0; cx < W; cx += cell) {
+                    const ix = ((cx + cell * .5) * SC) | 0;
+                    if (ix < 1 || ix >= simW - 1) continue;
+                    const i = row + ix;
+                    const amp = b1[i];
+                    const dxv = b1[i - 1] - b1[i + 1];
+                    const dyv = b1[i - simW] - b1[i + simW];
+                    const mag = Math.abs(amp) + Math.abs(dxv) + Math.abs(dyv);
+                    if (mag < 7) continue;
+                    if (drawn > 1600 && mag < 45) continue;
+                    drawn++;
+                    let ox = dxv * ref * .0012, oy = dyv * ref * .0012;
+                    if (ox > cell) ox = cell; else if (ox < -cell) ox = -cell;
+                    if (oy > cell) oy = cell; else if (oy < -cell) oy = -cell;
+                    let sxp = cover.sx + (cx + ox) * kx;
+                    let syp = cover.sy + (cy + oy) * ky;
+                    if (sxp < cover.sx) sxp = cover.sx;
+                    if (syp < cover.sy) syp = cover.sy;
+                    if (sxp > mxc) sxp = mxc;
+                    if (syp > myc) syp = myc;
+                    ctx.drawImage(vid, sxp, syp, wv, hv, cx, cy, cell, cell);
+                    const a = Math.abs(amp) * .00035;
+                    if (a > .02) {
+                        ctx.globalCompositeOperation = 'screen';
+                        ctx.fillStyle = SHIM[Math.min(10, (a * 50) | 0)];
+                        ctx.fillRect(cx, cy, cell, cell);
+                        ctx.globalCompositeOperation = 'source-over';
+                    }
+                }
+            }
+        }
+    } else {
+        // Sin vídeo: brillos azules sobre el degradado de fondo
+        let drawn = 0;
+        const cell = 18;
+        for (let cy = 0; cy < H; cy += cell) {
+            const iy = ((cy + cell * .5) * SC) | 0;
+            if (iy < 1 || iy >= simH - 1) continue;
+            const row = iy * simW;
+            for (let cx = 0; cx < W; cx += cell) {
+                const ix = ((cx + cell * .5) * SC) | 0;
+                if (ix < 1 || ix >= simW - 1) continue;
+                const a = Math.abs(b1[row + ix]) * .0004;
+                if (a < .02 || drawn > 1600) continue;
+                drawn++;
+                ctx.globalCompositeOperation = 'screen';
+                ctx.fillStyle = SHIM[Math.min(10, (a * 50) | 0)];
+                ctx.fillRect(cx, cy, cell, cell);
+            }
+        }
+        ctx.globalCompositeOperation = 'source-over';
+    }
+}
+
+/* =========================================================
+   ELECCIÓN DE MODO Y BUCLE SUPERVISADO
+   (si un render falla 3 frames seguidos, se degrada solo y
+   NUNCA se queda la página congelada)
+   ========================================================= */
+let gpuTried = false;
+function activateBestMode() {
+    if (!gpuTried) {
+        gpuTried = true;
+        try { gpuInit(); } catch (e) { gl = null; console.warn('GPU no disponible:', e.message); }
+    }
+    if (gpu && gpuProbe()) { setMode('gpu'); }
+    else { if (!ctx2) ctx2 = c2.getContext('2d'); c2Resize(); setMode('2d'); }
+    errFrames = 0;
+}
+
+function loop() {
+    raf = requestAnimationFrame(loop);
+    try {
+        if (mode === 'gpu') {
+            gpuFrame();
+            if (rain) addDrop(Math.random() * W, Math.random() * H, str * (.15 + Math.random() * .45), rad);
+        } else if (mode === '2d') {
+            c2Frame();
+        } else {
+            drainDrops(); // sin vídeo: solo consumir la cola
+        }
+        errFrames = 0;
+    } catch (e) {
+        if (++errFrames > 3) {
+            errFrames = 0;
+            console.error('Fallo del render, cambiando a modo de respaldo:', e);
+            if (mode === 'gpu') { gpu = null; if (!ctx2) ctx2 = c2.getContext('2d'); c2Resize(); setMode('2d'); }
+            else { cancelAnimationFrame(raf); return; }
+        }
+    }
+}
+
+function resize() {
+    W = innerWidth; H = innerHeight;
+    glc.width = W; glc.height = H;
+    c2.width = W; c2.height = H;
+    updateCover();
+    if (gpu) gpuResize();
+    if (ctx2) c2Resize();
+}
+let rTm;
+window.addEventListener('resize', () => { clearTimeout(rTm); rTm = setTimeout(resize, 200); });
+
+/* Pausa cuando la pestaña no se ve (batería) */
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { cancelAnimationFrame(raf); }
+    else { tryPlay(); cancelAnimationFrame(raf); loop(); }
+});
+
+/* =========================================================
+   PANEL
+   ========================================================= */
+const panel = document.getElementById('panel'), togBtn = document.getElementById('togBtn');
+togBtn.onclick = () => { panel.classList.remove('off'); togBtn.classList.add('hide'); };
+document.getElementById('closeBtn').onclick = () => { panel.classList.add('off'); togBtn.classList.remove('hide'); };
+document.getElementById('sS').oninput = e => { str = +e.target.value; document.getElementById('vS').textContent = str; };
+document.getElementById('sD').oninput = e => { dmp = +e.target.value / 1000; document.getElementById('vD').textContent = dmp.toFixed(3); };
+document.getElementById('sR').oninput = e => { ref = +e.target.value; document.getElementById('vR').textContent = ref; };
+document.getElementById('sRad').oninput = e => { rad = +e.target.value; document.getElementById('vRad').textContent = rad; };
+document.getElementById('rainBtn').onclick = function () {
+    rain = !rain;
+    this.className = 'btn-rain ' + (rain ? 'on' : 'off');
+    this.innerHTML = rain ? '<i class="fas fa-cloud-rain"></i> Lluvia activada' : '<i class="fas fa-cloud-rain"></i> Modo lluvia';
+};
+
+/* =========================================================
+   ARRANQUE
+   ========================================================= */
+resize();
+nextSource();          // carga webm (o mp4 de reserva)
+activateBestMode();    // elige GPU o compatibilidad desde el arranque (agua aunque falte el vídeo)
+loop();
+setTimeout(hideH, 6000);
+</script>
+</body>
+</html>

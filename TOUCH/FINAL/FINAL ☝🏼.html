@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Listón de colores — Multitouch</title>
+    <style>
+        :root {
+            --card: rgba(6,14,28,.92);
+            --border: rgba(0,128,255,.18);
+            --muted: #4A6A8A;
+            --fg: #00ff22;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+        html, body { touch-action:none; }
+        body {
+            font-family:Arial, sans-serif; color:var(--fg);
+            overflow:hidden; width:100vw; height:100vh;
+            background:radial-gradient(120% 100% at 40% 35%, #0A2060 0%, #061540 40%, #030C28 75%, #010618 100%);
+        }
+        #bgv { position:fixed; inset:0; width:100%; height:100%; object-fit:cover; pointer-events:none; }
+        #trail { position:fixed; inset:0; width:100vw; height:100vh; pointer-events:none; z-index:40; }
+        .hint {
+            position:fixed; bottom:32px; left:50%; transform:translateX(-50%);
+            background:var(--card); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+            border:1px solid var(--border); border-radius:10px; padding:9px 20px;
+            z-index:90; text-align:center; font-size:13px;
+            transition:opacity .5s,transform .5s; box-shadow:0 4px 20px rgba(0,0,0,.4);
+        }
+        .hint.gone { opacity:0; transform:translateX(-50%) translateY(14px); pointer-events:none; }
+        .badge {
+            position:fixed; top:14px; right:14px; transform:scale(.85); transform-origin:top right;
+            background:var(--card); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+            border:1px solid var(--border); border-radius:20px;
+            padding:12px 28px; z-index:90; font-size:24px; color:var(--muted);
+            display:flex; align-items:center; gap:16px;
+        }
+        .badge b {
+            color:#48c9ff; font-weight:900; font-size:40px; min-width:52px; text-align:center;
+            display:inline-block; transition:transform .15s ease, color .15s;
+        }
+        .badge b.pulse { transform:scale(1.45); }
+        .badge b.hot { color:#9b5cff; }
+        @media (prefers-reduced-motion:reduce) { .badge b { transition:none; } }
+    </style>
+</head>
+<body>
+
+<video id="bgv" muted loop playsinline autoplay preload="auto" aria-hidden="true"></video>
+<canvas id="trail" aria-hidden="true"></canvas>
+
+<div class="hint" id="hint">Desliza con los dedos para dibujar listones de colores</div>
+<div class="badge">✋ Dedos: <b id="dC">0</b></div>
+
+<script>
+const VIDEO_SOURCES = ["DEMO.MP4"];
+const vid = document.getElementById('bgv');
+const trailCanvas = document.getElementById('trail');
+const trailCtx = trailCanvas.getContext('2d');
+const $dC = document.getElementById('dC');
+
+let W = 0, H = 0;
+let srcIdx = -1;
+let raf = 0;
+const pts = new Map();
+const trails = new Map();
+const TRAIL_LIFETIME = 420;
+const RIBBON_COLORS = ['#082b8a', '#48c9ff', '#9b5cff'];
+let trailsActive = false;
+
+function nextSource() {
+    srcIdx++;
+    if (srcIdx >= VIDEO_SOURCES.length) {
+        console.warn('Sin vídeo de fondo: se usa el degradado azul.');
+        return;
+    }
+    vid.src = VIDEO_SOURCES[srcIdx];
+    vid.load();
+    tryPlay();
+}
+function tryPlay() {
+    if (vid.paused && srcIdx < VIDEO_SOURCES.length) {
+        vid.play().catch(e => console.warn('El navegador impidió reanudar el vídeo:', e.message));
+    }
+}
+vid.addEventListener('error', nextSource);
+vid.addEventListener('pause', tryPlay);
+vid.addEventListener('ended', tryPlay);
+
+function requestRender() {
+    if (!raf) raf = requestAnimationFrame(render);
+}
+function addTrailPoint(pointerId, x, y, now) {
+    let trail = trails.get(pointerId);
+    if (!trail) {
+        trail = { points: [], releasedAt: null };
+        trails.set(pointerId, trail);
+    }
+    const points = trail.points;
+    const previous = points[points.length - 1];
+    if (previous) {
+        const dx = x - previous.x, dy = y - previous.y;
+        if (dx * dx + dy * dy < 4) return false;
+    }
+    points.push({ x, y });
+    trail.releasedAt = null;
+    trailsActive = true;
+    return true;
+}
+function render(now) {
+    raf = 0;
+    for (const [pointerId, trail] of trails) {
+        if (trail.releasedAt !== null && now - trail.releasedAt > TRAIL_LIFETIME) trails.delete(pointerId);
+    }
+
+    trailCtx.clearRect(0, 0, W, H);
+    for (const trail of trails.values()) {
+        const points = trail.points;
+        const first = points[0], last = points[points.length - 1];
+        const alpha = trail.releasedAt === null
+            ? 1
+            : Math.max(0, 1 - (now - trail.releasedAt) / TRAIL_LIFETIME);
+        trailCtx.globalAlpha = alpha;
+        if (points.length > 1) {
+            const gradient = trailCtx.createLinearGradient(first.x, first.y, last.x + 0.01, last.y + 0.01);
+            gradient.addColorStop(0, RIBBON_COLORS[0]);
+            gradient.addColorStop(0.5, RIBBON_COLORS[1]);
+            gradient.addColorStop(1, RIBBON_COLORS[2]);
+            trailCtx.beginPath();
+            trailCtx.moveTo(first.x, first.y);
+            for (let i = 1; i < points.length; i++) trailCtx.lineTo(points[i].x, points[i].y);
+            trailCtx.lineCap = 'round';
+            trailCtx.lineJoin = 'round';
+            trailCtx.shadowColor = RIBBON_COLORS[2];
+            trailCtx.shadowBlur = 16;
+            trailCtx.strokeStyle = gradient;
+            trailCtx.lineWidth = 18;
+            trailCtx.stroke();
+            trailCtx.shadowBlur = 0;
+            trailCtx.strokeStyle = 'rgba(72,201,255,0.8)';
+            trailCtx.lineWidth = 3;
+            trailCtx.stroke();
+        }
+    }
+    trailCtx.globalAlpha = 1;
+    trailsActive = trails.size > 0;
+    if (trailsActive) requestRender();
+}
+
+function updateCount() {
+    const count = pts.size;
+    $dC.textContent = count;
+    $dC.classList.toggle('hot', count > 0);
+    $dC.classList.remove('pulse');
+    void $dC.offsetWidth;
+    if (count > 0) $dC.classList.add('pulse');
+}
+function down(e) {
+    e.preventDefault();
+    if (e.target instanceof Element && e.target.setPointerCapture) {
+        e.target.setPointerCapture(e.pointerId);
+    }
+    document.getElementById('hint').classList.add('gone');
+    tryPlay();
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    trails.delete(e.pointerId);
+    addTrailPoint(e.pointerId, e.clientX, e.clientY, performance.now());
+    requestRender();
+    updateCount();
+}
+function move(e) {
+    const point = pts.get(e.pointerId);
+    if (!point) return;
+    e.preventDefault();
+    if (addTrailPoint(e.pointerId, e.clientX, e.clientY, performance.now())) requestRender();
+    point.x = e.clientX;
+    point.y = e.clientY;
+}
+function release(e) {
+    if (pts.delete(e.pointerId)) {
+        const trail = trails.get(e.pointerId);
+        if (trail) trail.releasedAt = performance.now();
+        updateCount();
+        requestRender();
+    }
+}
+window.addEventListener('pointerdown', down, { passive: false });
+window.addEventListener('pointermove', move, { passive: false });
+window.addEventListener('pointerup', release);
+window.addEventListener('pointercancel', release);
+window.addEventListener('lostpointercapture', release);
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+document.addEventListener('visibilitychange', tryPlay);
+
+function resize() {
+    W = innerWidth;
+    H = innerHeight;
+    trailCanvas.width = W;
+    trailCanvas.height = H;
+}
+window.addEventListener('resize', resize);
+resize();
+nextSource();
+setTimeout(() => document.getElementById('hint').classList.add('gone'), 6000);
+</script>
+</body>
+</html>
